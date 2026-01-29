@@ -1,105 +1,109 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 from datetime import datetime
 import asyncio
 
 from config import TOKEN, GUILD_ID, AFK_CHANNEL_ID
 
 intents = discord.Intents.default()
-intents.message_content = True
 intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-afk_users = {}
-afk_messages = {}
+afk_users = {}  # user_id: {start_time, message_id}
 
-# ---------------- READY ----------------
 @bot.event
 async def on_ready():
-    guild = discord.Object(id=GUILD_ID)
-    await bot.tree.sync(guild=guild)
+    print(f"Logado como {bot.user}")
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     update_afk.start()
-    print("AFK (bot) online!")
 
-# ---------------- /afk ----------------
-@bot.tree.command(name="afk", description="Ficar AFK")
+# ---------------- AFK ----------------
+
+@bot.tree.command(name="afk", description="Ficar AFK", guild=discord.Object(id=GUILD_ID))
 async def afk(interaction: discord.Interaction):
-    if interaction.user.id in afk_users:
+    user = interaction.user
+    channel = bot.get_channel(AFK_CHANNEL_ID)
+
+    if user.id in afk_users:
         await interaction.response.send_message(
             "Você já está AFK.", ephemeral=True
         )
         return
 
-    channel = bot.get_channel(AFK_CHANNEL_ID)
-    now = datetime.now()
+    start_time = datetime.now()
 
-    afk_users[interaction.user.id] = now
-
-    msg = await channel.send(
-        f"{interaction.user.display_name}\n"
-        f"⏳ Tempo AFK: 00:00\n"
-        f"🕓 Horário: {now.strftime('%H:%M')}"
+    embed = discord.Embed(color=0x5865F2)
+    embed.add_field(name=user.name, value="⏳ Tempo AFK: 0s", inline=False)
+    embed.add_field(
+        name="🕓 Horário",
+        value=start_time.strftime("%H:%M"),
+        inline=False,
     )
 
-    afk_messages[interaction.user.id] = msg.id
+    msg = await channel.send(embed=embed)
+
+    afk_users[user.id] = {
+        "start_time": start_time,
+        "message_id": msg.id,
+    }
 
     await interaction.response.send_message(
-        "Você agora está AFK.", ephemeral=True
+        "Status AFK ativado.", ephemeral=True
     )
 
-# ---------------- /unafk ----------------
-@bot.tree.command(name="unafk", description="Voltar do AFK")
+# ---------------- UNAFK ----------------
+
+@bot.tree.command(name="unafk", description="Sair do AFK", guild=discord.Object(id=GUILD_ID))
 async def unafk(interaction: discord.Interaction):
-    if interaction.user.id not in afk_users:
+    user = interaction.user
+    channel = bot.get_channel(AFK_CHANNEL_ID)
+
+    if user.id not in afk_users:
         await interaction.response.send_message(
             "Você não está AFK.", ephemeral=True
         )
         return
 
-    channel = bot.get_channel(AFK_CHANNEL_ID)
-    msg_id = afk_messages.get(interaction.user.id)
-
-    if msg_id:
-        try:
-            msg = await channel.fetch_message(msg_id)
-            await msg.delete()
-        except:
-            pass
-
-    afk_users.pop(interaction.user.id)
-    afk_messages.pop(interaction.user.id)
+    data = afk_users.pop(user.id)
+    msg = await channel.fetch_message(data["message_id"])
+    await msg.delete()
 
     await interaction.response.send_message(
-        "Você saiu do AFK.", ephemeral=True
+        "Status AFK removido. Você está disponível.", ephemeral=True
     )
 
-# ---------------- LOOP (5s) ----------------
+# ---------------- ATUALIZA TEMPO ----------------
+
 @tasks.loop(seconds=5)
 async def update_afk():
     channel = bot.get_channel(AFK_CHANNEL_ID)
-    now = datetime.now()
 
-    for user_id, start_time in afk_users.items():
-        elapsed = int((now - start_time).total_seconds())
-        minutes = elapsed // 60
-        seconds = elapsed % 60
-
-        msg_id = afk_messages.get(user_id)
-        if not msg_id:
-            continue
-
+    for user_id, data in afk_users.items():
         try:
-            msg = await channel.fetch_message(msg_id)
-            await msg.edit(
-                content=
-                f"{msg.author.display_name}\n"
-                f"⏳ Tempo AFK: {minutes:02d}:{seconds:02d}\n"
-                f"🕓 Horário: {start_time.strftime('%H:%M')}"
+            msg = await channel.fetch_message(data["message_id"])
+            elapsed = int((datetime.now() - data["start_time"]).total_seconds())
+
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+
+            embed = discord.Embed(color=0x5865F2)
+            embed.add_field(
+                name=msg.embeds[0].fields[0].name,
+                value=f"⏳ Tempo AFK: {minutes}m {seconds}s",
+                inline=False,
             )
+            embed.add_field(
+                name="🕓 Horário",
+                value=data["start_time"].strftime("%H:%M"),
+                inline=False,
+            )
+
+            await msg.edit(embed=embed)
         except:
             pass
 
 # ---------------- RUN ----------------
+
 bot.run(TOKEN)
