@@ -55,7 +55,7 @@ async def afk(interaction: discord.Interaction):
 
     embed = discord.Embed(color=0x5865F2)
     embed.add_field(
-        name=user.name,
+        name=user.name\n,
         value=(
             "⏳ Tempo AFK: 0s\n"
             f"🕓 Horário: {start.strftime('%H:%M')}"
