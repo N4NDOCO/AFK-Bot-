@@ -8,7 +8,7 @@ import sys
 TOKEN = os.environ.get("TOKEN")
 
 if not TOKEN or not isinstance(TOKEN, str):
-    print("❌ ERRO: TOKEN não definido ou inválido nas variáveis de ambiente")
+    print("❌ ERRO: TOKEN não definido ou inválido")
     sys.exit(1)
 
 GUILD_ID = 1465477542919016625
@@ -17,8 +17,7 @@ AFK_CHANNEL_ID = 1466487369195720777
 BR_TZ = timezone(timedelta(hours=-3))
 RESET_DAY = 28
 
-ONLINE_GAP = 900  # 15 minutos
-MAX_DISCOUNT = 20
+STAFF_ROLES = ["Entregador", "Mod", "Staff"]
 # =========================================
 
 intents = discord.Intents.default()
@@ -28,13 +27,16 @@ intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # ================= DADOS =================
-afk_users = {}
-afk_totals = {}
+afk_users = {}      # user_id: {start, message, name}
+afk_totals = {}     # user_id: total_seconds
 
-last_message_time = {}
-online_seconds = {}
+user_discounts = {}  # user_id: desconto %
 
-last_reset_month = datetime.now(BR_TZ).month
+VALID_CODES = {
+    "START_SEVER": 2,
+    "BEST_STORE01": 3,
+    "START_SEVER_2.0": 5
+}
 
 # ================= UTILS =================
 def format_time(seconds: int):
@@ -43,16 +45,14 @@ def format_time(seconds: int):
     s = seconds % 60
     return f"{h}h {m}m {s}s"
 
-def get_discount(uid: int) -> int:
-    hours = online_seconds.get(uid, 0) // 3600
-    return min(hours, MAX_DISCOUNT)
+def has_staff_role(member: discord.Member) -> bool:
+    return any(role.name in STAFF_ROLES for role in member.roles)
 
 # ================= READY =================
 @bot.event
 async def on_ready():
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     update_afk.start()
-    check_reset.start()
     print("🟢 AFK bot online!")
 
 # ================= /AFK =================
@@ -61,7 +61,9 @@ async def afk(interaction: discord.Interaction):
     await interaction.response.send_message("⏳ Você está AFK.", ephemeral=True)
 
     user = interaction.user
-    if user.id in afk_users:
+    uid = user.id
+
+    if uid in afk_users:
         return
 
     channel = bot.get_channel(AFK_CHANNEL_ID)
@@ -69,8 +71,10 @@ async def afk(interaction: discord.Interaction):
         return
 
     start = datetime.now(BR_TZ)
-    afk_totals.setdefault(user.id, 0)
-    online_seconds.setdefault(user.id, 0)
+
+    # garante que os dados existam
+    afk_totals.setdefault(uid, 0)
+    user_discounts.setdefault(uid, 0)
 
     embed = discord.Embed(title=user.display_name, color=0x5865F2)
     embed.add_field(
@@ -80,19 +84,19 @@ async def afk(interaction: discord.Interaction):
     )
     embed.add_field(
         name="Total AFK",
-        value=format_time(afk_totals[user.id]),
+        value=format_time(afk_totals[uid]),  # agora usa o total real
         inline=False
     )
     embed.add_field(
         name="💸 Desconto",
-        value=f"🎁 {get_discount(user.id)}%",
+        value=f"🎁 {user_discounts[uid]}%",
         inline=False
     )
     embed.set_footer(text="Status: OFF")
 
     msg = await channel.send(embed=embed)
 
-    afk_users[user.id] = {
+    afk_users[uid] = {
         "start": start,
         "message": msg,
         "name": user.display_name
@@ -103,11 +107,61 @@ async def afk(interaction: discord.Interaction):
 async def unafk(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Você voltou.", ephemeral=True)
 
-    data = afk_users.pop(interaction.user.id, None)
+    uid = interaction.user.id
+    data = afk_users.pop(uid, None)
+
     if data:
         elapsed = int((datetime.now(BR_TZ) - data["start"]).total_seconds())
-        afk_totals[interaction.user.id] += elapsed
+        afk_totals[uid] += elapsed
         await data["message"].delete()
+
+# ================= /CODE =================
+@bot.tree.command(name="code", description="Usar um código de desconto", guild=discord.Object(id=GUILD_ID))
+async def code(interaction: discord.Interaction, codigo: str):
+    codigo = codigo.upper()
+    uid = interaction.user.id
+
+    if codigo not in VALID_CODES:
+        await interaction.response.send_message("❌ Código inválido.", ephemeral=True)
+        return
+
+    desconto = VALID_CODES[codigo]
+    atual = user_discounts.get(uid, 0)
+
+    if desconto <= atual:
+        await interaction.response.send_message(
+            f"⚠️ Você já possui **{atual}%** de desconto.",
+            ephemeral=True
+        )
+        return
+
+    user_discounts[uid] = desconto
+    await interaction.response.send_message(
+        f"🎉 Código aplicado!\n💸 Novo desconto: **{desconto}%**",
+        ephemeral=True
+    )
+
+# ================= /DESCONTO =================
+@bot.tree.command(name="desconto", description="Ver desconto de um usuário", guild=discord.Object(id=GUILD_ID))
+async def desconto(interaction: discord.Interaction, usuario: discord.Member):
+    desconto = user_discounts.get(usuario.id, 0)
+    await interaction.response.send_message(
+        f"💸 {usuario.mention} possui **{desconto}%** de desconto.",
+        ephemeral=True
+    )
+
+# ================= /DESCONTO_TIRAR =================
+@bot.tree.command(name="desconto_tirar", description="Resetar desconto (STAFF)", guild=discord.Object(id=GUILD_ID))
+async def desconto_tirar(interaction: discord.Interaction, usuario: discord.Member):
+    if not has_staff_role(interaction.user):
+        await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+        return
+
+    user_discounts[usuario.id] = 0
+    await interaction.response.send_message(
+        f"🔄 Desconto de {usuario.mention} resetado.",
+        ephemeral=True
+    )
 
 # ================= ON MESSAGE =================
 @bot.event
@@ -117,13 +171,6 @@ async def on_message(message):
 
     uid = message.author.id
     now = datetime.now(BR_TZ)
-
-    if uid in last_message_time:
-        gap = (now - last_message_time[uid]).total_seconds()
-        if gap <= ONLINE_GAP:
-            online_seconds[uid] = online_seconds.get(uid, 0) + gap
-
-    last_message_time[uid] = now
 
     if uid in afk_users:
         data = afk_users.pop(uid)
@@ -146,6 +193,7 @@ async def update_afk():
 
     for uid, data in afk_users.items():
         elapsed = int((now - data["start"]).total_seconds())
+        total = afk_totals.get(uid, 0) + elapsed
 
         embed = discord.Embed(title=data["name"], color=0x5865F2)
         embed.add_field(
@@ -155,27 +203,17 @@ async def update_afk():
         )
         embed.add_field(
             name="Total AFK",
-            value=format_time(afk_totals.get(uid, 0) + elapsed),
+            value=format_time(total),
             inline=False
         )
         embed.add_field(
             name="💸 Desconto",
-            value=f"🎁 {get_discount(uid)}%",
+            value=f"🎁 {user_discounts.get(uid, 0)}%",
             inline=False
         )
         embed.set_footer(text="Status: OFF")
 
         await data["message"].edit(embed=embed)
-
-# ================= RESET =================
-@tasks.loop(minutes=1)
-async def check_reset():
-    global last_reset_month
-    now = datetime.now(BR_TZ)
-
-    if now.day == RESET_DAY and now.month != last_reset_month:
-        last_reset_month = now.month
-        print("🔄 Novo mês iniciado")
 
 # ================= RUN =================
 bot.run(TOKEN)
