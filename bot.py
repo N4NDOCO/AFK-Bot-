@@ -15,7 +15,6 @@ GUILD_ID = 1465477542919016625
 AFK_CHANNEL_ID = 1466487369195720777
 
 BR_TZ = timezone(timedelta(hours=-3))
-RESET_DAY = 28
 
 STAFF_ROLES = ["Entregador", "Mod", "Staff"]
 # =========================================
@@ -27,10 +26,11 @@ intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # ================= DADOS =================
-afk_users = {}      # user_id: {start, message, name}
-afk_totals = {}     # user_id: total_seconds
+afk_users = {}          # user_id: {start, message, name}
+afk_totals = {}         # user_id: total_seconds
 
-user_discounts = {}  # user_id: desconto %
+user_discounts = {}     # user_id: desconto %
+used_codes = {}         # user_id: set(codigos_usados)
 
 VALID_CODES = {
     "START_SEVER": 2,
@@ -72,7 +72,6 @@ async def afk(interaction: discord.Interaction):
 
     start = datetime.now(BR_TZ)
 
-    # garante que os dados existam
     afk_totals.setdefault(uid, 0)
     user_discounts.setdefault(uid, 0)
 
@@ -84,12 +83,7 @@ async def afk(interaction: discord.Interaction):
     )
     embed.add_field(
         name="Total AFK",
-        value=format_time(afk_totals[uid]),  # agora usa o total real
-        inline=False
-    )
-    embed.add_field(
-        name="💸 Desconto",
-        value=f"🎁 {user_discounts[uid]}%",
+        value=format_time(afk_totals[uid]),
         inline=False
     )
     embed.set_footer(text="Status: OFF")
@@ -105,7 +99,7 @@ async def afk(interaction: discord.Interaction):
 # ================= /UNAFK =================
 @bot.tree.command(name="unafk", description="Voltar do AFK", guild=discord.Object(id=GUILD_ID))
 async def unafk(interaction: discord.Interaction):
-    await interaction.response.send_message("✅ Você voltou.", ephemeral=True)
+    await interaction.response.send_message("✅ Դուք voltou.", ephemeral=True)
 
     uid = interaction.user.id
     data = afk_users.pop(uid, None)
@@ -125,19 +119,25 @@ async def code(interaction: discord.Interaction, codigo: str):
         await interaction.response.send_message("❌ Código inválido.", ephemeral=True)
         return
 
-    desconto = VALID_CODES[codigo]
-    atual = user_discounts.get(uid, 0)
+    used_codes.setdefault(uid, set())
+    user_discounts.setdefault(uid, 0)
 
-    if desconto <= atual:
+    if codigo in used_codes[uid]:
         await interaction.response.send_message(
-            f"⚠️ Você já possui **{atual}%** de desconto.",
+            "⚠️ Você já usou esse código.",
             ephemeral=True
         )
         return
 
-    user_discounts[uid] = desconto
+    novo_desconto = VALID_CODES[codigo]
+
+    if novo_desconto > user_discounts[uid]:
+        user_discounts[uid] = novo_desconto
+
+    used_codes[uid].add(codigo)
+
     await interaction.response.send_message(
-        f"🎉 Código aplicado!\n💸 Novo desconto: **{desconto}%**",
+        f"🎉 Código **{codigo}** aplicado!\n💸 Desconto atual: **{user_discounts[uid]}%**",
         ephemeral=True
     )
 
@@ -158,6 +158,8 @@ async def desconto_tirar(interaction: discord.Interaction, usuario: discord.Memb
         return
 
     user_discounts[usuario.id] = 0
+    used_codes[usuario.id] = set()
+
     await interaction.response.send_message(
         f"🔄 Desconto de {usuario.mention} resetado.",
         ephemeral=True
@@ -204,11 +206,6 @@ async def update_afk():
         embed.add_field(
             name="Total AFK",
             value=format_time(total),
-            inline=False
-        )
-        embed.add_field(
-            name="💸 Desconto",
-            value=f"🎁 {user_discounts.get(uid, 0)}%",
             inline=False
         )
         embed.set_footer(text="Status: OFF")
