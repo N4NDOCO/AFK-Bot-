@@ -4,14 +4,12 @@ from datetime import datetime, timedelta, timezone
 import os
 
 # ================= CONFIG =================
-TOKEN = os.environ.get("TOKEN")
+TOKEN = os.environ.get("AFK_TOKEN")  # token do bot AFK
 
 GUILD_ID = 1465477542919016625
 AFK_CHANNEL_ID = 1466487369195720777
 
 BR_TZ = timezone(timedelta(hours=-3))
-RESET_DAY = 28
-
 ONLINE_GAP = 900  # 15 minutos
 MAX_DISCOUNT = 20
 # =========================================
@@ -22,16 +20,10 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# AFK
 afk_users = {}
-afk_totals = {}          # total geral (não reseta)
-afk_monthly = {}         # ranking mensal (reseta)
-
-# ONLINE / DESCONTO
+afk_totals = {}
 last_message_time = {}
 online_seconds = {}
-
-last_reset_month = datetime.now(BR_TZ).month
 
 # ---------- UTILS ----------
 def format_time(seconds: int):
@@ -41,20 +33,15 @@ def format_time(seconds: int):
     seconds = seconds % 60
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
-def get_discount(uid):
-    hours = online_seconds.get(uid, 0) // 3600
+def get_user_discount(user_id: int) -> int:
+    hours = online_seconds.get(user_id, 0) // 3600
     return min(hours, MAX_DISCOUNT)
-
-def get_ranking():
-    ranking = sorted(afk_monthly.items(), key=lambda x: x[1], reverse=True)
-    return ranking[:3]
 
 # ---------- READY ----------
 @bot.event
 async def on_ready():
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     update_afk.start()
-    check_reset.start()
     print("AFK bot online!")
 
 # ---------- /afk ----------
@@ -73,7 +60,6 @@ async def afk(interaction: discord.Interaction):
     start = datetime.now(BR_TZ)
 
     afk_totals.setdefault(user.id, 0)
-    afk_monthly.setdefault(user.id, 0)
     online_seconds.setdefault(user.id, 0)
 
     embed = discord.Embed(title=user.display_name, color=0x5865F2)
@@ -82,9 +68,16 @@ async def afk(interaction: discord.Interaction):
         value=f"⏳ Tempo AFK: 0s\n🕓 Horário: {start.strftime('%H:%M:%S')}",
         inline=False
     )
-    embed.add_field(name="Total", value=format_time(afk_totals[user.id]), inline=False)
-    embed.add_field(name="Desconto", value=f"{get_discount(user.id)}%", inline=False)
-    embed.add_field(name="Ranking", value="Atualizando...", inline=False)
+    embed.add_field(
+        name="Total",
+        value=format_time(afk_totals[user.id]),
+        inline=False
+    )
+    embed.add_field(
+        name="💸 Desconto",
+        value=f"{get_user_discount(user.id)}%",
+        inline=False
+    )
     embed.set_footer(text="Status: OFF")
 
     msg = await channel.send(embed=embed)
@@ -100,7 +93,6 @@ async def unafk(interaction: discord.Interaction):
     if data:
         elapsed = int((datetime.now(BR_TZ) - data["start"]).total_seconds())
         afk_totals[interaction.user.id] += elapsed
-        afk_monthly[interaction.user.id] += elapsed
         await data["message"].delete()
 
 # ---------- ON MESSAGE ----------
@@ -112,7 +104,6 @@ async def on_message(message):
     uid = message.author.id
     now = datetime.now(BR_TZ)
 
-    # ONLINE TIME
     if uid in last_message_time:
         gap = (now - last_message_time[uid]).total_seconds()
         if gap <= ONLINE_GAP:
@@ -120,12 +111,10 @@ async def on_message(message):
 
     last_message_time[uid] = now
 
-    # SAIR DO AFK
     if uid in afk_users:
         data = afk_users.pop(uid)
         elapsed = int((now - data["start"]).total_seconds())
         afk_totals[uid] += elapsed
-        afk_monthly[uid] += elapsed
 
         try:
             await data["message"].delete()
@@ -139,12 +128,6 @@ async def on_message(message):
 # ---------- UPDATE EMBEDS ----------
 @tasks.loop(seconds=5)
 async def update_afk():
-    ranking = get_ranking()
-    ranking_text = "\n".join(
-        f"**Top {i}** <@{uid}> — {format_time(t)}"
-        for i, (uid, t) in enumerate(ranking, start=1)
-    ) or "Sem dados."
-
     now = datetime.now(BR_TZ)
 
     for uid, data in afk_users.items():
@@ -162,25 +145,13 @@ async def update_afk():
             inline=False
         )
         embed.add_field(
-            name="Desconto",
-            value=f"{get_discount(uid)}%",
+            name="💸 Desconto",
+            value=f"{get_user_discount(uid)}%",
             inline=False
         )
-        embed.add_field(name="Ranking", value=ranking_text, inline=False)
         embed.set_footer(text="Status: OFF")
 
         await data["message"].edit(embed=embed)
-
-# ---------- RESET MENSAL ----------
-@tasks.loop(minutes=1)
-async def check_reset():
-    global last_reset_month
-    now = datetime.now(BR_TZ)
-
-    if now.day == RESET_DAY and now.month != last_reset_month:
-        afk_monthly.clear()
-        last_reset_month = now.month
-        print("🔄 Ranking mensal resetado")
 
 # ---------- RUN ----------
 bot.run(TOKEN)
